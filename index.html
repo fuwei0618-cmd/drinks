@@ -121,6 +121,15 @@ td.n{text-align:right;white-space:nowrap}
 .redtxt{color:#c62828;font-weight:700}
 @media (prefers-color-scheme: dark){.redtxt{color:#ff8a80}}
 .loc{white-space:pre-line}
+#oMain.closed .ordering{display:none!important}
+#oAll summary{cursor:pointer;font-weight:700;list-style:none;display:flex;justify-content:space-between;gap:8px}
+#oAll summary::-webkit-details-marker{display:none}
+#oAll summary::after{content:"展開 ▾";font-weight:500;font-size:13px;color:var(--muted)}
+#oAll[open] summary::after{content:"收起 ▴"}
+.who{display:grid;gap:2px;padding-top:8px;border-top:1px solid var(--line)}
+.who:first-of-type{border-top:0}
+.linkbox{display:flex;gap:8px;align-items:center}
+.linkbox input{font-size:13px}
 .act{border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:10px;background:var(--bg)}
 .act summary{cursor:pointer;font-weight:700;list-style:none;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .act summary::-webkit-details-marker{display:none}
@@ -148,14 +157,15 @@ td.n{text-align:right;white-space:nowrap}
   <div id="oMain" hidden style="display:grid;gap:14px">
     <div class="chips wrapc" id="oSessions"></div>
     <div class="card" id="oInfo"></div>
-    <div class="card">
+    <div class="card ordering">
       <label class="f" for="myName">你的名字
         <input type="text" id="myName" placeholder="例如：小瑋" maxlength="20" autocomplete="nickname"></label>
     </div>
-    <div class="card" id="oLast" hidden></div>
+    <div class="card ordering" id="oLast" hidden></div>
     <div class="card" id="oMine"></div>
-    <div class="chips" id="cats"></div>
-    <div id="menu"></div>
+    <details class="card" id="oAll"></details>
+    <div class="chips ordering" id="cats"></div>
+    <div id="menu" class="ordering"></div>
   </div>
 </section>
 
@@ -564,26 +574,42 @@ function renderAll(){
 }
 
 // ================= 個人點飲料 =================
+const URL_SID=new URLSearchParams(location.search).get("s");
+function sessLink(s){return location.origin+location.pathname+"?s="+encodeURIComponent(s.id)}
 function renderOrder(){
   const open=D.sessions.filter(s=>s.status==="open");
-  $("#oNone").hidden=!!open.length;$("#oMain").hidden=!open.length;
-  if(!open.length)return;
-  if(!open.find(s=>s.id===curOrderSid))curOrderSid=(open.find(s=>s.id===ls.get("lastSid",""))||open[0]).id;
-  const s=open.find(x=>x.id===curOrderSid),a=actById(s.activityId);
-  $("#oSessions").innerHTML=open.length>1?`<span class="muted" style="width:100%">現在有 ${open.length} 張單，請選你要點的：</span>`+open.map(x=>`<button class="chip ${x.id===s.id?"on":""}" data-sid="${x.id}">${esc(sessLabel(x))}</button>`).join(""):"";
+  let s=null,linked=false;
+  if(URL_SID){s=D.sessions.find(x=>x.id===URL_SID)||null;linked=true}
+  if(linked&&!s){$("#oNone").hidden=false;$("#oMain").hidden=true;$("#oNone").innerHTML=`<div class="empty">找不到這張單，可能已經被刪除。<br>請跟負責人確認連結。</div>`;return}
+  if(!linked){
+    $("#oNone").hidden=!!open.length;$("#oMain").hidden=!open.length;
+    if(!open.length)return;
+    if(!open.find(x=>x.id===curOrderSid))curOrderSid=(open.find(x=>x.id===ls.get("lastSid",""))||open[0]).id;
+    s=open.find(x=>x.id===curOrderSid);
+  }else{$("#oNone").hidden=true;$("#oMain").hidden=false}
+  curOrderSid=s.id;
+  const a=actById(s.activityId),isOpen=s.status==="open";
+  $("#oMain").classList.toggle("closed",!isOpen);
+  $("#oSessions").innerHTML=!linked&&open.length>1?`<span class="muted" style="width:100%">現在有 ${open.length} 張單，請選你要點的：</span>`+open.map(x=>`<button class="chip ${x.id===s.id?"on":""}" data-sid="${x.id}">${esc(sessLabel(x))}</button>`).join(""):"";
   const all=ordersOf(s.id),t=totals(all,s);
   const loc=locLines(a);
-  $("#oInfo").innerHTML=`<div class="row"><h2 class="grow">${esc(a.name)}・${esc(fmtDate(s.date))}${s.title?" "+esc(s.title):""}</h2><span class="pill open">開放點單</span></div>
+  $("#oInfo").innerHTML=`<div class="row"><h2 class="grow">${esc(a.name)}・${esc(fmtDate(s.date))}${s.title?" "+esc(s.title):""}</h2><span class="pill ${isOpen?"open":s.status==="done"?"done":"locked"}">${isOpen?"開放點單":statusTxt(s)}</span></div>
    <div class="muted">負責人：${esc(s.leader||"—")}${a.sponsor?`・${esc(a.sponsor)}`:""}</div>
-   <div class="muted">${modeTxt(s.mode)}・取餐 <b>${esc(s.time||"未定")}</b>${s.deadline?`・${esc(s.deadline)} 截止點單`:""}</div>
+   <div class="muted">${modeTxt(s.status==="done"?s.paidMode:s.mode)}・取餐 <b>${esc(s.time||"未定")}</b>${s.deadline&&isOpen?`・${esc(s.deadline)} 截止點單`:""}</div>
    ${s.mode!=="pickup"&&loc.length?`<div class="note loc">📍 ${loc.map(esc).join("\n")}</div>`:""}
-   <div class="muted">已經點的人（${t.people}）：${[...new Set(all.map(o=>o.name))].map(esc).join("、")||"還沒有人"}</div>
+   ${!isOpen?`<div class="note warn">這張單已經${s.status==="done"?"結帳":"截止"}，不能再點。要改請找負責人。</div>`:""}
    ${t.budget>0?`<div class="muted">${esc(a.name)} 額度剩 <b>$${t.before}</b>（總額 $${t.budget}）</div>`:""}`;
   const last=lastItems().filter(x=>menuById(x.itemId)&&menuById(x.itemId).on!=="false");
   const lc=$("#oLast");lc.hidden=!last.length;
   if(last.length)lc.innerHTML=`<div class="row"><strong class="grow">上次點的</strong><button class="btn brass sm" id="repeatBtn">照上次再點一次</button></div>`+last.map(o=>`<div class="muted">${esc(itemLabel(o))} ×${o.qty}・${esc(spec(o))}</div>`).join("");
   const mine=all.filter(o=>o.device===device);
-  $("#oMine").innerHTML=`<strong>我在這張單點的</strong>`+(mine.length?`<div style="display:grid;gap:8px">${mine.map(o=>`<div class="line"><div class="d"><div><b>${esc(itemLabel(o))}</b> ×${o.qty}</div><div class="muted">${esc(o.name)}・${esc(spec(o))}${o.note?"・"+esc(o.note):""}</div></div><div class="pr">$${num(o.unit)*num(o.qty,1)}</div><button class="btn ghost sm" data-del="${o.id}">刪除</button></div>`).join("")}</div>`:`<div class="muted">還沒點，從下面菜單選一杯。</div>`);
+  $("#oMine").hidden=!isOpen&&!mine.length;
+  $("#oMine").innerHTML=`<strong>我在這張單點的</strong>`+(mine.length?`<div style="display:grid;gap:8px">${mine.map(o=>`<div class="line"><div class="d"><div><b>${esc(itemLabel(o))}</b> ×${o.qty}</div><div class="muted">${esc(o.name)}・${esc(spec(o))}${o.note?"・"+esc(o.note):""}</div></div><div class="pr">$${num(o.unit)*num(o.qty,1)}</div>${isOpen?`<button class="btn ghost sm" data-del="${o.id}">刪除</button>`:""}</div>`).join("")}</div>`:`<div class="muted">還沒點，從下面菜單選一杯。</div>`);
+  // 大家點了什麼（折疊）
+  const byName={};all.forEach(o=>(byName[o.name]=byName[o.name]||[]).push(o));
+  const det=$("#oAll"),wasOpen=det.open||(det.dataset.sid!==s.id?false:det.open);det.dataset.sid=s.id;
+  det.innerHTML=`<summary><span>大家點了什麼（${t.people} 人・${t.cups} 杯）</span></summary>`+(all.length?`<div style="display:grid;gap:8px;margin-top:8px">${Object.entries(byName).map(([n,list])=>`<div class="who"><b>${esc(n)}</b>${list.map(o=>`<div class="muted">${esc(itemLabel(o))} ×${o.qty}・${esc(spec(o))}${o.note?"・"+esc(o.note):""}</div>`).join("")}</div>`).join("")}</div>`:`<div class="muted" style="margin-top:8px">還沒有人點。</div>`);
+  det.open=wasOpen;
   renderMenuList(a.useAct!=="false"&&s.mode!=="delivery");
 }
 let menuSig="";
@@ -672,7 +698,7 @@ $("#nTime").oninput=()=>{const t=$("#nTime").value,c=D.config;$("#nTimeWarn").te
 $("#nCreate").onclick=()=>safe(async()=>{
   const ld=$("#nLeader").value.trim();ls.set("leaderName",ld);
   const j=await call({action:"createSession",pin:leader.pin,data:{activityId:$("#nAct").value,leader:ld,date:$("#nDate").value,title:$("#nTitle").value.trim(),mode:nMode,time:$("#nTime").value,deadline:$("#nDeadline").value,note:$("#nNote").value}});
-  curLeaderSid=j.session.id;$("#nTitle").value="";await refresh();toast("已開單，把網址傳給大家就能點了")});
+  curLeaderSid=j.session.id;$("#nTitle").value="";await refresh();toast("已開單！往下複製「開單通知」傳到群組")});
 function renderLeader(){
   const ok=!!leader;$("#lGate").hidden=ok;$("#lMain").hidden=!ok;if(!ok)return;
   const acts=myActs();
@@ -713,6 +739,13 @@ function renderLeader(){
     ${warns.length?`<div class="redtxt">${warns.map(esc).join("<br>")}</div>`:""}
   </div>
   <div class="card">
+    <strong>這張單的專屬點單連結</strong>
+    <div class="muted">大家點這個連結，只會看到這張單，不會跟其他活動的單搞混。</div>
+    <div class="linkbox"><input id="shareLink" readonly value="${esc(sessLink(s))}"><button class="btn sm" id="copyLink">複製連結</button></div>
+    <label class="f" for="shareMsg">開單通知（複製後貼到 LINE 群組）<textarea id="shareMsg" readonly style="min-height:170px">${esc(shareMsg(s,a))}</textarea></label>
+    <button class="btn brass" id="copyShare">複製開單通知</button>
+  </div>
+  <div class="card">
     <div class="row"><h2 class="grow">結帳</h2><span class="muted">${t.people} 人・${t.cups} 杯・原價 $${t.raw}${t.act!==t.raw?`・優惠後 $${t.act}`:""}</span></div>
     ${t.budget>0?`<div class="muted">${esc(a.name)} 總額度 $${t.budget}・其他單已用 $${t.used}（${t.usedN} 張）・<b>這張結帳前剩 $${t.before}</b></div>`:""}
     <div class="pay" id="payModes">
@@ -742,6 +775,12 @@ function renderLeader(){
   </div>
   <button class="btn danger" id="eDelete">刪除這張單</button>`;
 }
+function shareMsg(s,a){
+  const c=D.config;
+  return `📣 ${a.name} ${fmtDate(s.date)}${s.title?" "+s.title:""} 開單囉！\n負責人：${s.leader||""}\n${s.deadline?`⏰ ${s.deadline} 前點單\n`:""}🥤 取餐時間 ${s.time||"未定"}\n⚠️ 最早 ${c.timeNormal} 取餐，含珍珠的飲料 ${c.timePearl} 之後\n\n👉 點這裡點飲料：\n${sessLink(s)}`;
+}
+function copyText(el,ok){const fb=()=>{el.focus();el.select();toast("請長按選取後複製")};
+  if(navigator.clipboard)navigator.clipboard.writeText(el.value).then(()=>toast(ok),fb);else fb()}
 function buildMsg(s,rows,t){
   const c=D.config,loc=locLines(t.a),store=(c.shop||"").split(" ").pop();
   const where=s.mode==="delivery"?`外送－${store}${loc.length?"\n"+loc.join("\n"):""}`:s.mode==="pickup"?`自取－${store}`:`自取／外送（待確認）－${store}`;
@@ -755,8 +794,9 @@ $("#lDetail").onclick=e=>{
   const up=t.closest("#eUnpay");if(up){if(!arm(up,"確定取消結帳？","取消結帳"))return;return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:"locked"}});await refresh();toast("已取消結帳")})}
   if(t.closest("#eSave"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{leader:$("#eLeader").value,time:$("#eTime").value,deadline:$("#eDeadline").value,note:$("#eNote").value}});document.activeElement?.blur();await refresh();toast("已儲存")});
   if(t.closest("#eLock"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:s.status==="open"?"locked":"open"}});await refresh();toast(s.status==="open"?"已截止點單":"已重新開放")});
-  if(t.closest("#copyMsg")){const ta=$("#msg");const fb=()=>{ta.focus();ta.select();toast("請長按選取後複製")};
-    if(navigator.clipboard)navigator.clipboard.writeText(ta.value).then(()=>toast("已複製，貼到 LINE 傳給店家"),fb);else fb();return}
+  if(t.closest("#copyMsg"))return copyText($("#msg"),"已複製，貼到 LINE 傳給店家");
+  if(t.closest("#copyLink"))return copyText($("#shareLink"),"已複製專屬連結");
+  if(t.closest("#copyShare"))return copyText($("#shareMsg"),"已複製，貼到 LINE 群組通知大家");
   const del=t.closest("[data-del]");
   if(del){if(!arm(del,"確定","刪除"))return;return safe(async()=>{await call({action:"deleteOrder",id:del.dataset.del,pin});await refresh();toast("已刪除")})}
   const ds=t.closest("#eDelete");
@@ -842,7 +882,7 @@ $("#cSave").onclick=()=>safe(async()=>{const config={};Object.entries(CF).forEac
   await call({action:"saveConfig",pin:adminPin,config});if(ap){adminPin=ap;ls.set("adminPin",ap)}cfgFilled=false;menuSig="";await refresh();toast(ap?"設定已儲存，管理密碼已更新":"設定已儲存")});
 
 // ---------- 自動更新：有新版就重新載入（避免手機一直用舊版） ----------
-const APP_VERSION="2026-10-05-1430";
+const APP_VERSION="2026-10-05-1440";
 (async()=>{try{
   const r=await fetch("./?v="+Date.now(),{cache:"no-store"});const t=await r.text();
   const m=t.match(/APP_VERSION="([^"]+)"/);
