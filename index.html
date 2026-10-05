@@ -731,10 +731,12 @@ function renderLeader(){
     <div class="row"><h2 class="grow">${esc(a.name)}・${esc(fmtDate(s.date))}${s.title?" "+esc(s.title):""}</h2><span class="pill ${s.status==="open"?"open":done?"done":"locked"}">${statusTxt(s)}</span></div>
     <div class="grid2">
       <label class="f" for="eLeader">負責人<input type="text" id="eLeader" value="${esc(s.leader)}"></label>
+      <label class="f" for="eDate">日期<input type="date" id="eDate" value="${esc(s.date)}"></label>
       <label class="f" for="eTime">取餐時間<input type="time" id="eTime" min="${esc(c.timeNormal)}" value="${esc(s.time)}"></label>
       <label class="f" for="eDeadline">點單截止<input type="time" id="eDeadline" value="${esc(s.deadline)}"></label>
     </div>
     <label class="f" for="eNote">給店家的備註<input type="text" id="eNote" value="${esc(s.note)}"></label>
+    <div class="grp"><span>取餐方式</span><div class="seg" id="eMode">${[["","結帳時再決定"],["pickup","自取"],["delivery","外送"]].map(([v,n])=>`<button data-v="${v}" class="${(s.mode||"")===v?"on":""}" ${done?"disabled":""}>${n}</button>`).join("")}</div></div>
     <div class="foot"><button class="btn ghost" id="eSave">儲存修改</button>${done?"":`<button class="btn ${s.status==="open"?"brass":"ghost"}" id="eLock">${s.status==="open"?"截止點單":"重新開放點單"}</button>`}</div>
     ${warns.length?`<div class="redtxt">${warns.map(esc).join("<br>")}</div>`:""}
   </div>
@@ -786,13 +788,16 @@ function buildMsg(s,rows,t){
   const where=s.mode==="delivery"?`外送－${store}${loc.length?"\n"+loc.join("\n"):""}`:s.mode==="pickup"?`自取－${store}`:`自取／外送（待確認）－${store}`;
   return `⭐️ 訂購 — ${c.shop} ${fmtDate(s.date)}\n\n(1) 飲料：\n${rows.map((r,i)=>`${i+1}. ${r.n} ${r.d} ×${r.q}`).join("\n")||"（尚無品項）"}\n共 ${t.cups} 杯\n\n(2) ${where}\n\n(3) 時間：${s.time||"未定"}${s.note?`\n\n⚠️備註：${s.note}`:""}`;
 }
-$("#lSessions").onclick=e=>{const b=e.target.closest("[data-sid]");if(b){curLeaderSid=b.dataset.sid;renderLeader()}};
+$("#lSessions").onclick=e=>{const b=e.target.closest("[data-sid]");if(b){curLeaderSid=b.dataset.sid;eMode=null;renderLeader()}};
+let eMode=null;
 $("#lDetail").onclick=e=>{
   const s=D.sessions.find(x=>x.id===curLeaderSid);if(!s)return;const t=e.target,pin=leader.pin;
+  const em=t.closest("#eMode button");if(em){if(em.disabled)return;eMode=em.dataset.v;$("#eMode").querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===em));return}
   const pm=t.closest("#payModes button");if(pm){if(pm.disabled||s.status==="done")return;return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{mode:pm.dataset.mode}});await refresh()})}
   if(t.closest("#ePay"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:"done"}});await refresh();toast("已結帳，額度已更新")});
   const up=t.closest("#eUnpay");if(up){if(!arm(up,"確定取消結帳？","取消結帳"))return;return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:"locked"}});await refresh();toast("已取消結帳")})}
-  if(t.closest("#eSave"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{leader:$("#eLeader").value,time:$("#eTime").value,deadline:$("#eDeadline").value,note:$("#eNote").value}});document.activeElement?.blur();await refresh();toast("已儲存")});
+  const done0=s.status==="done";
+  if(t.closest("#eSave"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{leader:$("#eLeader").value,date:$("#eDate").value,time:$("#eTime").value,deadline:$("#eDeadline").value,note:$("#eNote").value,...(eMode!==null&&!done0?{mode:eMode}:{})}});eMode=null;document.activeElement?.blur();await refresh();toast("已儲存")});
   if(t.closest("#eLock"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:s.status==="open"?"locked":"open"}});await refresh();toast(s.status==="open"?"已截止點單":"已重新開放")});
   if(t.closest("#copyMsg"))return copyText($("#msg"),"已複製，貼到 LINE 傳給店家");
   if(t.closest("#copyLink"))return copyText($("#shareLink"),"已複製專屬連結");
@@ -882,7 +887,7 @@ $("#cSave").onclick=()=>safe(async()=>{const config={};Object.entries(CF).forEac
   await call({action:"saveConfig",pin:adminPin,config});if(ap){adminPin=ap;ls.set("adminPin",ap)}cfgFilled=false;menuSig="";await refresh();toast(ap?"設定已儲存，管理密碼已更新":"設定已儲存")});
 
 // ---------- 自動更新：有新版就重新載入（避免手機一直用舊版） ----------
-const APP_VERSION="2026-10-05-1440";
+const APP_VERSION="2026-10-05-1445";
 (async()=>{try{
   const r=await fetch("./?v="+Date.now(),{cache:"no-store"});const t=await r.text();
   const m=t.match(/APP_VERSION="([^"]+)"/);
