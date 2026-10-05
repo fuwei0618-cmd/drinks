@@ -43,7 +43,13 @@ section{padding-block:14px;display:grid;gap:14px}
 .row>.grow{flex:1;min-width:0}
 .muted{color:var(--muted);font-size:13px}
 .pill{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;font-weight:700;font-size:12px;white-space:nowrap}
-.pill.open{background:var(--ok-soft);color:var(--ok)} .pill.locked{background:var(--warn-soft);color:var(--warn)}
+.pill.open{background:var(--ok-soft);color:var(--ok)} .pill.locked{background:var(--warn-soft);color:var(--warn)} .pill.done{background:var(--chip);color:var(--muted)}
+.pay{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pay button{border:2px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;border-radius:12px;padding:12px;text-align:left;cursor:pointer;display:grid;gap:2px}
+.pay button.on{border-color:var(--brass);background:var(--brass-soft)}
+.pay button:disabled{cursor:default}
+.pay b{font-size:22px}
+.pay .muted{font-size:12px}
 .chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
 .chips.wrapc{flex-wrap:wrap;overflow:visible}
 .chip{flex:none;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;padding:5px 12px;border-radius:999px;cursor:pointer}
@@ -170,11 +176,10 @@ td.n{text-align:right;white-space:nowrap}
         <label class="f" for="nDate">日期<input type="date" id="nDate"></label>
         <label class="f" for="nTime">取餐時間<input type="time" id="nTime" min="11:30"></label>
         <label class="f" for="nDeadline">點單截止<input type="time" id="nDeadline"></label>
-        <label class="f" for="nBudget">額度（0 = 不設）<input type="number" id="nBudget" step="100" min="0"></label>
         <label class="f" for="nTitle">名稱（可不填）<input type="text" id="nTitle" maxlength="30" placeholder="例如：下午茶"></label>
       </div>
       <label class="f" for="nNote">給店家的備註<input type="text" id="nNote"></label>
-      <div class="grp"><span>取餐方式</span><div class="seg" id="nMode"><button data-v="pickup" class="on">自取</button><button data-v="delivery">外送</button></div></div>
+      <div class="grp"><span>取餐方式</span><div class="seg" id="nMode"><button data-v="" class="on">結帳時再決定</button><button data-v="pickup">自取</button><button data-v="delivery">外送</button></div></div>
       <div class="redtxt" id="nTimeWarn"></div>
       <button class="btn brass" id="nCreate">開單</button>
     </div>
@@ -303,7 +308,7 @@ function defaultActivities() {
 var TABLES = {
   menu: ['id', 'cat', 'name', 'L', 'XL', 'aL', 'aXL', 'flags', 'bases', 'on', 'sort'],
   activities: ['id', 'name', 'start', 'end', 'sponsor', 'budget', 'pickupRate', 'deliveryRate', 'useAct', 'location', 'note', 'leaderPin', 'status', 'createdAt'],
-  sessions: ['id', 'activityId', 'leader', 'date', 'title', 'mode', 'time', 'deadline', 'budget', 'note', 'status', 'createdAt'],
+  sessions: ['id', 'activityId', 'leader', 'date', 'title', 'mode', 'time', 'deadline', 'budget', 'note', 'status', 'createdAt', 'paidMode', 'paidAmount', 'paidAt'],
   orders: ['id', 'sessionId', 'name', 'device', 'itemId', 'item', 'base', 'size', 'sugar', 'ice', 'tops', 'qty', 'note', 'unit', 'unitAct', 'createdAt']
 };
 
@@ -341,6 +346,18 @@ function findBy(list, id, msg) {
   throw new Error(msg);
 }
 function hhmm(t) { return /^\d{1,2}:\d{2}$/.test(String(t || '')) ? ('0' + t).slice(-5) : ''; }
+// 一張單的金額：raw 原價合計、act 套用優惠價合計、pick 自取應付、deli 外送應付
+function calc(orders, act) {
+  var useAct = String(act.useAct) !== 'false', raw = 0, sum = 0, cups = 0;
+  orders.forEach(function (o) { var q = num(o.qty, 1); raw += num(o.unit) * q; sum += num(useAct ? (o.unitAct || o.unit) : o.unit) * q; cups += q; });
+  return { raw: raw, act: sum, cups: cups, pick: Math.round(sum * num(act.pickupRate, 1)), deli: Math.round(raw * num(act.deliveryRate, 1)) };
+}
+// 活動已結帳用掉的金額（可排除某一張單）
+function actUsed(sessions, actId, exceptId) {
+  var used = 0, n = 0;
+  sessions.forEach(function (s) { if (s.activityId === actId && s.status === 'done' && s.id !== exceptId) { used += num(s.paidAmount); n++; } });
+  return { used: used, count: n };
+}
 
 // store = {config, menu, activities, sessions, orders}；回傳 {ok, ..., _dirty:[表名]}
 function handle(store, req) {
@@ -387,7 +404,10 @@ function handle(store, req) {
     var idx = -1; store.orders.forEach(function (o, i) { if (o.id === req.id) idx = i; });
     if (idx < 0) return { ok: true };
     var o = store.orders[idx], s1 = findBy(store.sessions, o.sessionId, '找不到這張單');
-    if (req.pin) needLeader(store, req, s1.activityId);
+    if (req.pin) {
+      needLeader(store, req, s1.activityId);
+      if (s1.status === 'done') throw new Error('這張單已結帳，要先「取消結帳」才能修改');
+    }
     else {
       if (!req.device || o.device !== req.device) throw new Error('只能刪除自己這支手機點的飲料');
       if (s1.status !== 'open') throw new Error('已截止，請找負責人修改');
@@ -410,13 +430,26 @@ function handle(store, req) {
     if (isNew) {
       if (!d.date) throw new Error('請選日期');
       if (!String(d.leader || '').trim()) throw new Error('請填負責人名字');
-      s2 = { id: uid('s'), activityId: act.id, status: 'open', createdAt: Date.now(), budget: num(act.budget), note: act.note || '', mode: 'pickup', title: '', time: '', deadline: '', leader: '', date: '' };
+      s2 = { id: uid('s'), activityId: act.id, status: 'open', createdAt: Date.now(), budget: '', note: act.note || '', mode: '', title: '', time: '', deadline: '', leader: '', date: '', paidMode: '', paidAmount: '', paidAt: '' };
       store.sessions.push(s2);
     }
     ['leader', 'date', 'title', 'time', 'deadline', 'note'].forEach(function (k) { if (d[k] !== undefined) s2[k] = String(d[k]).slice(0, 40); });
-    if (d.mode !== undefined) s2.mode = d.mode === 'delivery' ? 'delivery' : 'pickup';
-    if (d.status !== undefined) s2.status = d.status === 'locked' ? 'locked' : 'open';
-    if (d.budget !== undefined && d.budget !== '') s2.budget = num(d.budget);
+    if (d.mode !== undefined) {
+      if (s2.status === 'done') throw new Error('已結帳，要先「取消結帳」才能改取餐方式');
+      s2.mode = d.mode === 'delivery' || d.mode === 'pickup' ? d.mode : '';
+    }
+    if (d.status !== undefined) {
+      if (d.status === 'done') {
+        if (s2.mode !== 'pickup' && s2.mode !== 'delivery') throw new Error('請先選自取或外送');
+        var mine = store.orders.filter(function (o) { return o.sessionId === s2.id; });
+        if (!mine.length) throw new Error('這張單還沒有人點，不能結帳');
+        var cc = calc(mine, act);
+        s2.status = 'done'; s2.paidMode = s2.mode; s2.paidAmount = s2.mode === 'delivery' ? cc.deli : cc.pick; s2.paidAt = Date.now();
+      } else {
+        s2.status = d.status === 'locked' ? 'locked' : 'open';
+        s2.paidMode = ''; s2.paidAmount = ''; s2.paidAt = '';
+      }
+    }
     return { ok: true, session: s2, _dirty: ['sessions'] };
   }
   if (a === 'deleteSession') {
@@ -508,12 +541,13 @@ function itemLabel(o){return o.item+(o.base?`（${o.base}）`:"")}
 function isPearl(o){return flagsOf(menuById(o.itemId)).includes("p")||String(o.tops||"").includes("珍珠")}
 const ordersOf=sid=>D.orders.filter(o=>o.sessionId===sid);
 function totals(orders,s){
-  const a=actById(s.activityId),useAct=a.useAct!=="false";let raw=0,act=0,cups=0;
-  orders.forEach(o=>{const q=num(o.qty,1);raw+=num(o.unit)*q;act+=num(useAct?(o.unitAct||o.unit):o.unit)*q;cups+=q});
-  const pick=Math.round(act*num(a.pickupRate,1)),deli=Math.round(raw*num(a.deliveryRate,1));
-  const budget=num(s.budget);const cur=s.mode==="delivery"?deli:pick;
-  return{a,raw,act,cups,pick,deli,cur,budget,left:budget-cur,people:new Set(orders.map(o=>o.name)).size,pearl:orders.some(isPearl)};
+  const a=actById(s.activityId),c=calc(orders,a);
+  const u=actUsed(D.sessions,s.activityId,s.id),budget=num(a.budget);
+  const cur=s.status==="done"?num(s.paidAmount):s.mode==="delivery"?c.deli:s.mode==="pickup"?c.pick:null;
+  return{a,...c,cur,budget,used:u.used,usedN:u.count,before:budget-u.used,people:new Set(orders.map(o=>o.name)).size,pearl:orders.some(isPearl)};
 }
+const modeTxt=m=>m==="delivery"?"外送":m==="pickup"?"自取":"取餐方式結帳時決定";
+const statusTxt=s=>s.status==="open"?"點單中":s.status==="done"?"已結帳":"已截止";
 function timeRule(){const c=D.config;return `最早 ${c.timeNormal||"11:30"} 取餐｜含珍珠的飲料 ${c.timePearl||"12:30"} 之後`}
 
 // ---------- 分頁 ----------
@@ -537,10 +571,10 @@ function renderOrder(){
   const loc=locLines(a);
   $("#oInfo").innerHTML=`<div class="row"><h2 class="grow">${esc(a.name)}・${esc(fmtDate(s.date))}${s.title?" "+esc(s.title):""}</h2><span class="pill open">開放點單</span></div>
    <div class="muted">負責人：${esc(s.leader||"—")}${a.sponsor?`・${esc(a.sponsor)}`:""}</div>
-   <div class="muted">${s.mode==="delivery"?"外送":"自取"}・取餐 <b>${esc(s.time||"未定")}</b>${s.deadline?`・${esc(s.deadline)} 截止點單`:""}</div>
-   ${s.mode==="delivery"&&loc.length?`<div class="note loc">📍 ${loc.map(esc).join("\n")}</div>`:""}
+   <div class="muted">${modeTxt(s.mode)}・取餐 <b>${esc(s.time||"未定")}</b>${s.deadline?`・${esc(s.deadline)} 截止點單`:""}</div>
+   ${s.mode!=="pickup"&&loc.length?`<div class="note loc">📍 ${loc.map(esc).join("\n")}</div>`:""}
    <div class="muted">已經點的人（${t.people}）：${[...new Set(all.map(o=>o.name))].map(esc).join("、")||"還沒有人"}</div>
-   ${t.budget>0&&t.left<0?`<div class="note warn">目前已超出額度 $${-t.left}。</div>`:""}`;
+   ${t.budget>0?`<div class="muted">${esc(a.name)} 額度剩 <b>$${t.before}</b>（總額 $${t.budget}）</div>`:""}`;
   const last=lastItems().filter(x=>menuById(x.itemId)&&menuById(x.itemId).on!=="false");
   const lc=$("#oLast");lc.hidden=!last.length;
   if(last.length)lc.innerHTML=`<div class="row"><strong class="grow">上次點的</strong><button class="btn brass sm" id="repeatBtn">照上次再點一次</button></div>`+last.map(o=>`<div class="muted">${esc(itemLabel(o))} ×${o.qty}・${esc(spec(o))}</div>`).join("");
@@ -615,14 +649,14 @@ $("#sAdd").onclick=async()=>{if(!needName()){$("#sheetBg").hidden=true;return}co
 // ================= 負責人 =================
 function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
 const myActs=()=>leader?D.activities.filter(a=>leader.admin||leader.acts.includes(a.id)):[];
-let nMode="pickup",formActId="";
+let nMode="",formActId="";
 $("#nMode").onclick=e=>{const b=e.target.closest("button");if(!b)return;nMode=b.dataset.v;$("#nMode").querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b))};
 $("#lLogin").onclick=()=>safe(async()=>{const pin=$("#lPin").value.trim();const r=await call({action:"checkPin",pin});leader={pin,admin:r.admin,acts:r.acts};ls.set("leaderAuth",leader);$("#lPin").value="";toast(r.admin?"已用管理密碼登入（可看全部活動）":"已登入");formActId="";renderLeader()});
 $("#lPin").onkeydown=e=>{if(e.key==="Enter")$("#lLogin").click()};
 $("#lLogout").onclick=()=>{leader=null;ls.del("leaderAuth");renderLeader()};
 function fillNewForm(a){
-  $("#nBudget").value=num(a.budget);$("#nNote").value=a.note||"";
-  $("#nActInfo").innerHTML=[a.start||a.end?`活動期間 ${fmtDate(a.start)} – ${fmtDate(a.end)}`:"",a.sponsor||"",num(a.budget)>0?`額度 $${num(a.budget)}`:"不設額度",`自取 ${rateTxt(a.pickupRate)}・外送 ${rateTxt(a.deliveryRate)}`].filter(Boolean).map(esc).join("・");
+  $("#nNote").value=a.note||"";
+  $("#nActInfo").innerHTML=[a.start||a.end?`活動期間 ${fmtDate(a.start)} – ${fmtDate(a.end)}`:"",a.sponsor||"",num(a.budget)>0?`活動額度剩 $${num(a.budget)-actUsed(D.sessions,a.id).used}／$${num(a.budget)}`:"不設額度",`自取 ${rateTxt(a.pickupRate)}・外送 ${rateTxt(a.deliveryRate)}`].filter(Boolean).map(esc).join("・");
   if(!$("#nDate").value)$("#nDate").value=today();
   if(!$("#nTime").value)$("#nTime").value=D.config.timeNormal||"11:30";
   if(!$("#nDeadline").value)$("#nDeadline").value="11:00";
@@ -632,7 +666,7 @@ $("#nAct").onchange=()=>{formActId=$("#nAct").value;fillNewForm(actById(formActI
 $("#nTime").oninput=()=>{const t=$("#nTime").value,c=D.config;$("#nTimeWarn").textContent=t&&t<c.timeNormal?`取餐時間最早 ${c.timeNormal}`:t&&t<c.timePearl?`注意：${c.timePearl} 前取餐的話，大家不能點含珍珠的飲料`:""};
 $("#nCreate").onclick=()=>safe(async()=>{
   const ld=$("#nLeader").value.trim();ls.set("leaderName",ld);
-  const j=await call({action:"createSession",pin:leader.pin,data:{activityId:$("#nAct").value,leader:ld,date:$("#nDate").value,title:$("#nTitle").value.trim(),mode:nMode,time:$("#nTime").value,deadline:$("#nDeadline").value,budget:$("#nBudget").value,note:$("#nNote").value}});
+  const j=await call({action:"createSession",pin:leader.pin,data:{activityId:$("#nAct").value,leader:ld,date:$("#nDate").value,title:$("#nTitle").value.trim(),mode:nMode,time:$("#nTime").value,deadline:$("#nDeadline").value,note:$("#nNote").value}});
   curLeaderSid=j.session.id;$("#nTitle").value="";await refresh();toast("已開單，把網址傳給大家就能點了")});
 function renderLeader(){
   const ok=!!leader;$("#lGate").hidden=ok;$("#lMain").hidden=!ok;if(!ok)return;
@@ -647,7 +681,7 @@ function renderLeader(){
   const ids=new Set(acts.map(a=>a.id));
   const ss=D.sessions.filter(s=>ids.has(s.activityId));
   if(!ss.find(s=>s.id===curLeaderSid))curLeaderSid=ss[0]?.id||null;
-  $("#lSessions").innerHTML=ss.length?ss.map(s=>`<button class="chip ${s.id===curLeaderSid?"on":""}" data-sid="${s.id}">${esc(sessLabel(s))}・${esc(s.leader||"")}・${s.status==="open"?"點單中":"已截止"}</button>`).join(""):`<span class="muted">還沒有開過單。</span>`;
+  $("#lSessions").innerHTML=ss.length?ss.map(s=>`<button class="chip ${s.id===curLeaderSid?"on":""}" data-sid="${s.id}">${esc(sessLabel(s))}・${esc(s.leader||"")}・${statusTxt(s)}</button>`).join(""):`<span class="muted">還沒有開過單。</span>`;
   const s=ss.find(x=>x.id===curLeaderSid);const el=$("#lDetail");
   if(!s){el.innerHTML="";return}
   if(el.contains(document.activeElement)&&document.activeElement.matches("input"))return; // 正在輸入時不重畫
@@ -660,31 +694,30 @@ function renderLeader(){
   const missing=[...prevNames].filter(n=>!byName[n]);
   const warns=[];
   if(t.pearl&&s.time&&s.time<c.timePearl)warns.push(`有人點了含珍珠的飲料，取餐時間要改到 ${c.timePearl} 之後！`);
-  if(s.mode==="delivery")warns.push(`外送要先電話確認：${c.deliveryContact}。${t.raw<num(c.deliveryMin)?`目前原價 $${t.raw}，未到約 $${num(c.deliveryMin)}。`:""}`);
-  if(t.budget>0&&t.left<0)warns.push(`超出額度 $${-t.left}。`);
-  const discounted=num(a.pickupRate,1)<1||num(a.deliveryRate,1)<1||t.act!==t.raw;
+  const done=s.status==="done";
   el.innerHTML=`
   <div class="card">
-    <div class="row"><h2 class="grow">${esc(a.name)}・${esc(fmtDate(s.date))}${s.title?" "+esc(s.title):""}</h2><span class="pill ${s.status==="open"?"open":"locked"}">${s.status==="open"?"點單中":"已截止"}</span></div>
+    <div class="row"><h2 class="grow">${esc(a.name)}・${esc(fmtDate(s.date))}${s.title?" "+esc(s.title):""}</h2><span class="pill ${s.status==="open"?"open":done?"done":"locked"}">${statusTxt(s)}</span></div>
     <div class="grid2">
       <label class="f" for="eLeader">負責人<input type="text" id="eLeader" value="${esc(s.leader)}"></label>
       <label class="f" for="eTime">取餐時間<input type="time" id="eTime" min="${esc(c.timeNormal)}" value="${esc(s.time)}"></label>
       <label class="f" for="eDeadline">點單截止<input type="time" id="eDeadline" value="${esc(s.deadline)}"></label>
-      <label class="f" for="eBudget">額度（0 = 不設）<input type="number" id="eBudget" value="${num(s.budget)}"></label>
     </div>
     <label class="f" for="eNote">給店家的備註<input type="text" id="eNote" value="${esc(s.note)}"></label>
-    <div class="seg" id="eMode"><button data-v="pickup" class="${s.mode!=="delivery"?"on":""}">自取</button><button data-v="delivery" class="${s.mode==="delivery"?"on":""}">外送</button></div>
-    <div class="foot"><button class="btn ghost" id="eSave">儲存修改</button><button class="btn ${s.status==="open"?"brass":"ghost"}" id="eLock">${s.status==="open"?"截止點單":"重新開放"}</button></div>
+    <div class="foot"><button class="btn ghost" id="eSave">儲存修改</button>${done?"":`<button class="btn ${s.status==="open"?"brass":"ghost"}" id="eLock">${s.status==="open"?"截止點單":"重新開放點單"}</button>`}</div>
     ${warns.length?`<div class="redtxt">${warns.map(esc).join("<br>")}</div>`:""}
   </div>
-  <div class="card"><div class="sum">
-    <span class="k">人數・杯數</span><span>${t.people} 人・${t.cups} 杯</span>
-    <span class="k">① 原價合計</span><span>$${t.raw}</span>
-    ${discounted?`${t.act!==t.raw?`<span class="k">含店家優惠價</span><span>$${t.act}</span>`:""}
-    <span class="k">② 自取（${rateTxt(a.pickupRate)}）</span><span>$${t.pick}</span>
-    <span class="k">② 外送（${rateTxt(a.deliveryRate)}）</span><span>$${t.deli}</span>`:""}
-    ${t.budget>0?`<span class="k">額度 $${t.budget}・${s.mode==="delivery"?"外送":"自取"}剩</span><span class="big" style="color:${t.left<0?"var(--warn)":"var(--ok)"}">$${t.left}</span>`:`<span class="k">應付（${s.mode==="delivery"?"外送":"自取"}）</span><span class="big">$${t.cur}</span>`}
-  </div></div>
+  <div class="card">
+    <div class="row"><h2 class="grow">結帳</h2><span class="muted">${t.people} 人・${t.cups} 杯・原價 $${t.raw}${t.act!==t.raw?`・優惠後 $${t.act}`:""}</span></div>
+    ${t.budget>0?`<div class="muted">${esc(a.name)} 總額度 $${t.budget}・其他單已用 $${t.used}（${t.usedN} 張）・<b>這張結帳前剩 $${t.before}</b></div>`:""}
+    <div class="pay" id="payModes">
+      ${[["pickup","自取",t.pick,rateTxt(a.pickupRate)],["delivery","外送",t.deli,rateTxt(a.deliveryRate)]].map(([m,n,amt,r])=>`<button data-mode="${m}" class="${s.mode===m?"on":""}" ${done?"disabled":""}><span class="muted">${n}（${r}）</span><b>$${amt}</b>${t.budget>0?`<span class="muted" style="color:${t.before-amt<0?"var(--warn)":"inherit"}">結帳後剩 $${t.before-amt}</span>`:""}${m==="delivery"&&t.raw<num(c.deliveryMin)?`<span class="muted" style="color:var(--warn)">原價未到 $${num(c.deliveryMin)}</span>`:""}</button>`).join("")}
+    </div>
+    ${s.mode==="delivery"&&!done?`<div class="redtxt">外送要先電話確認：${esc(c.deliveryContact)}</div>`:""}
+    ${done?`<div class="note">✅ 已結帳：${modeTxt(s.paidMode)} $${num(s.paidAmount)}${t.budget>0?`・${esc(a.name)} 剩 $${t.before-num(s.paidAmount)}`:""}</div><button class="btn ghost" id="eUnpay">取消結帳</button>`
+      :s.status==="open"?`<div class="muted">先按上面的「截止點單」，再選自取或外送結帳。</div>`
+      :`<button class="btn brass" id="ePay" ${s.mode?"":"disabled"}>${s.mode?`確認結帳（${modeTxt(s.mode)} $${s.mode==="delivery"?t.deli:t.pick}）`:"先選自取或外送"}</button>`}
+  </div>
   <div class="card">
     <strong>可能還沒點</strong>
     <div class="muted">同一個活動前幾張單有點、這張還沒點的人</div>
@@ -706,15 +739,16 @@ function renderLeader(){
 }
 function buildMsg(s,rows,t){
   const c=D.config,loc=locLines(t.a),store=(c.shop||"").split(" ").pop();
-  const where=s.mode==="delivery"?`外送－${store}${loc.length?"\n"+loc.join("\n"):""}`:`自取－${store}`;
+  const where=s.mode==="delivery"?`外送－${store}${loc.length?"\n"+loc.join("\n"):""}`:s.mode==="pickup"?`自取－${store}`:`自取／外送（待確認）－${store}`;
   return `⭐️ 訂購 — ${c.shop} ${fmtDate(s.date)}\n\n(1) 飲料：\n${rows.map((r,i)=>`${i+1}. ${r.n} ${r.d} ×${r.q}`).join("\n")||"（尚無品項）"}\n共 ${t.cups} 杯\n\n(2) ${where}\n\n(3) 時間：${s.time||"未定"}${s.note?`\n\n⚠️備註：${s.note}`:""}`;
 }
-$("#lSessions").onclick=e=>{const b=e.target.closest("[data-sid]");if(b){curLeaderSid=b.dataset.sid;eMode=null;renderLeader()}};
-let eMode=null;
+$("#lSessions").onclick=e=>{const b=e.target.closest("[data-sid]");if(b){curLeaderSid=b.dataset.sid;renderLeader()}};
 $("#lDetail").onclick=e=>{
   const s=D.sessions.find(x=>x.id===curLeaderSid);if(!s)return;const t=e.target,pin=leader.pin;
-  const mb=t.closest("#eMode button");if(mb){eMode=mb.dataset.v;$("#eMode").querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===mb));return}
-  if(t.closest("#eSave"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{leader:$("#eLeader").value,time:$("#eTime").value,deadline:$("#eDeadline").value,budget:$("#eBudget").value,note:$("#eNote").value,mode:eMode||s.mode}});eMode=null;document.activeElement?.blur();await refresh();toast("已儲存")});
+  const pm=t.closest("#payModes button");if(pm){if(pm.disabled||s.status==="done")return;return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{mode:pm.dataset.mode}});await refresh()})}
+  if(t.closest("#ePay"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:"done"}});await refresh();toast("已結帳，額度已更新")});
+  const up=t.closest("#eUnpay");if(up){if(!arm(up,"確定取消結帳？","取消結帳"))return;return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:"locked"}});await refresh();toast("已取消結帳")})}
+  if(t.closest("#eSave"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{leader:$("#eLeader").value,time:$("#eTime").value,deadline:$("#eDeadline").value,note:$("#eNote").value}});document.activeElement?.blur();await refresh();toast("已儲存")});
   if(t.closest("#eLock"))return safe(async()=>{await call({action:"updateSession",pin,id:s.id,data:{status:s.status==="open"?"locked":"open"}});await refresh();toast(s.status==="open"?"已截止點單":"已重新開放")});
   if(t.closest("#copyMsg")){const ta=$("#msg");const fb=()=>{ta.focus();ta.select();toast("請長按選取後複製")};
     if(navigator.clipboard)navigator.clipboard.writeText(ta.value).then(()=>toast("已複製，貼到 LINE 傳給店家"),fb);else fb();return}
@@ -735,11 +769,11 @@ function actForm(a,isNew){
   const id=isNew?"new":a.id,f=(k,label,type="text",extra="")=>`<label class="f">${label}<input data-k="${k}" type="${type}" value="${esc(a[k]??"")}" ${extra}></label>`;
   const cnt=D.sessions.filter(s=>s.activityId===a.id).length;
   return `<details class="act" data-act="${id}" ${isNew||a._open?"open":""}>
-    <summary><span class="grow">${esc(a.name||"新活動")}</span>${isNew?"":`<span class="pill ${a.status==="archived"?"locked":"open"}">${a.status==="archived"?"已封存":"進行中"}</span><span class="muted">${a.start||a.end?esc(fmtDate(a.start)+" – "+fmtDate(a.end)):"不限日期"}・${cnt} 張單</span>`}</summary>
+    <summary><span class="grow">${esc(a.name||"新活動")}</span>${isNew?"":`<span class="pill ${a.status==="archived"?"locked":"open"}">${a.status==="archived"?"已封存":"進行中"}</span><span class="muted">${a.start||a.end?esc(fmtDate(a.start)+" – "+fmtDate(a.end)):"不限日期"}・${cnt} 張單${num(a.budget)>0?`・已用 $${actUsed(D.sessions,a.id).used}／$${num(a.budget)}`:""}</span>`}</summary>
     <div class="grid2">
       ${f("name","活動名稱")}${f("sponsor","贊助說明（可空白）","text",'placeholder="例如：老闆贊助"')}
       ${f("start","開始日期","date")}${f("end","結束日期","date")}
-      ${f("budget","每張單額度（0 = 不設）","number",'step="100" min="0"')}${f("note","給店家的預設備註")}
+      ${f("budget","活動期間總額度（0 = 不設）","number",'step="100" min="0"')}${f("note","給店家的預設備註")}
       ${f("pickupRate","自取折扣（1 = 原價）","number",'step="0.05" min="0.1" max="1"')}${f("deliveryRate","外送折扣（1 = 原價）","number",'step="0.05" min="0.1" max="1"')}
     </div>
     <label class="f">取餐地點（換行或｜分隔）<textarea data-k="location" style="min-height:64px">${esc(locLines(a).join("\n"))}</textarea></label>
