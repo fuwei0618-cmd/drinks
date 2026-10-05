@@ -841,6 +841,14 @@ $("#cSave").onclick=()=>safe(async()=>{const config={};Object.entries(CF).forEac
   const ap=$("#cAdminPin").value.trim();if(ap)config.adminPin=ap;
   await call({action:"saveConfig",pin:adminPin,config});if(ap){adminPin=ap;ls.set("adminPin",ap)}cfgFilled=false;menuSig="";await refresh();toast(ap?"設定已儲存，管理密碼已更新":"設定已儲存")});
 
+// ---------- 自動更新：有新版就重新載入（避免手機一直用舊版） ----------
+const APP_VERSION="2026-10-05-1430";
+(async()=>{try{
+  const r=await fetch("./?v="+Date.now(),{cache:"no-store"});const t=await r.text();
+  const m=t.match(/APP_VERSION="([^"]+)"/);
+  if(m&&m[1]!==APP_VERSION&&sessionStorage.getItem("reloadedFor")!==m[1]){sessionStorage.setItem("reloadedFor",m[1]);location.reload()}
+}catch{}})();
+
 // ---------- 啟動 ----------
 showTab(ls.get("tab","order"));
 renderAll();
