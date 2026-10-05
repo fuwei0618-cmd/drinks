@@ -141,6 +141,7 @@ td.n{text-align:right;white-space:nowrap}
 <header>
   <div class="eyebrow" id="shopName">紅茶大苑 國鼎店</div>
   <h1>飲料團購點單</h1>
+  <div id="staleBar" class="demo" hidden>連線不穩，畫面可能不是最新的。正在重新連線… <button class="btn ghost sm" id="retryBtn">重試</button></div>
   <div id="demoBar" class="demo" hidden>示範模式：資料只存在這支手機。設定好 Google 試算表網址後，大家的訂單才會共用。</div>
 </header>
 
@@ -527,16 +528,33 @@ async function call(req){
     if(res._dirty)ls.set("demoStore2",store);
     delete res._dirty;return JSON.parse(JSON.stringify(res));
   }
-  const r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(req)});
-  const j=await r.json();if(!j.ok)throw new Error(j.error||"連線失敗");return j;
+  // 讀取用 GET、寫入用 POST；逾時 30 秒；讀取失敗自動重試
+  const once=async()=>{
+    const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),30000);
+    try{
+      const r=req.action==="state"?await fetch(API_URL+"?t="+Date.now(),{signal:ac.signal,cache:"no-store"})
+        :await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(req),signal:ac.signal});
+      let j;try{j=await r.json()}catch{throw netErr()}
+      if(!j.ok){const e=new Error(j.error||"連線失敗");e.server=true;throw e}return j;
+    }catch(e){if(e.server)throw e;throw netErr()}finally{clearTimeout(tm)}
+  };
+  const tries=req.action==="state"||req.action==="checkPin"?3:1;
+  for(let i=0;;i++){try{return await once()}catch(e){if(e.server||i>=tries-1)throw e;await new Promise(r=>setTimeout(r,1500*(i+1)))}}
 }
+function netErr(){const e=new Error("網路連線不穩，請再試一次");e.net=true;return e}
 async function safe(fn){try{return await fn()}catch(e){toast(e.message||"連線失敗，請再試一次")}}
 
 let D={config:{...DEFAULT_CONFIG},menu:[],activities:[],sessions:[],orders:[]};
 let curOrderSid=null,curLeaderSid=null,adminMenu=null,adminDirty=false;
 let leader=ls.get("leaderAuth",null);   // {pin, admin, acts}
 let adminPin=ls.get("adminPin","");
-async function refresh(){D=await call({action:"state"});if(!adminDirty)adminMenu=null;renderAll()}
+// 最近一次成功的資料存在手機上：打開就先顯示，連線失敗也不會整頁消失
+let loaded=false,stale=false;
+try{const c=ls.get("lastState",null);if(c&&c.menu){D=c;loaded=true;stale=true}}catch{}
+async function refresh(){
+  try{D=await call({action:"state"});loaded=true;stale=false;ls.set("lastState",D)}
+  catch(e){stale=true;renderAll();throw e}
+  if(!adminDirty)adminMenu=null;renderAll()}
 
 // ---------- 價格與格式 ----------
 const menuById=id=>D.menu.find(m=>m.id===id);
@@ -568,7 +586,8 @@ function timeRule(){const c=D.config;return `最早 ${c.timeNormal||"11:30"} 取
 document.querySelector("nav.tabs").onclick=e=>{const b=e.target.closest("button");if(b)showTab(b.dataset.tab)};
 function showTab(t){document.querySelectorAll("nav.tabs button").forEach(x=>x.setAttribute("aria-selected",x.dataset.tab===t));["order","leader","admin"].forEach(p=>$("#p-"+p).hidden=p!==t);ls.set("tab",t)}
 function renderAll(){
-  $("#demoBar").hidden=!!API_URL;$("#shopName").textContent=D.config.shop||"";
+  $("#demoBar").hidden=!!API_URL;
+  $("#staleBar").hidden=!(API_URL&&stale&&loaded);$("#shopName").textContent=D.config.shop||"";
   $("#timeAlert").innerHTML=`⚠️ ${esc(timeRule())}<small>點單前請確認取餐時間</small>`;
   renderOrder();renderLeader();renderAdmin();
 }
@@ -577,6 +596,7 @@ function renderAll(){
 const URL_SID=new URLSearchParams(location.search).get("s");
 function sessLink(s){return location.origin+location.pathname+"?s="+encodeURIComponent(s.id)}
 function renderOrder(){
+  if(!loaded){$("#oMain").hidden=true;$("#oNone").hidden=false;$("#oNone").innerHTML=`<div class="empty">載入中…</div>`;return}
   const open=D.sessions.filter(s=>s.status==="open");
   let s=null,linked=false;
   if(URL_SID){s=D.sessions.find(x=>x.id===URL_SID)||null;linked=true}
@@ -639,7 +659,16 @@ function needName(){const n=$("#myName").value.trim();if(!n){$("#myName").focus(
 async function submit(items){
   const name=needName();if(!name)return;
   await safe(async()=>{
-    await call({action:"addOrder",sessionId:curOrderSid,name,device,items});
+    const before=D.orders.filter(o=>o.sessionId===curOrderSid&&o.device===device).length;
+    try{await call({action:"addOrder",sessionId:curOrderSid,name,device,items})}
+    catch(e){
+      if(!e.net)throw e;
+      // 網路斷掉時，訂單可能其實已經送到：先查一次再決定要不要重送
+      toast("連線不穩，確認中…");await new Promise(r=>setTimeout(r,2000));
+      await refresh().catch(()=>{});
+      const after=D.orders.filter(o=>o.sessionId===curOrderSid&&o.device===device).length;
+      if(after<before+items.length)await call({action:"addOrder",sessionId:curOrderSid,name,device,items});
+    }
     remember(curOrderSid,items);ls.set("lastSid",curOrderSid);
     await refresh();
     const s=D.sessions.find(x=>x.id===curOrderSid);
@@ -702,6 +731,7 @@ $("#nCreate").onclick=()=>safe(async()=>{
 function renderLeader(){
   const ok=!!leader;$("#lGate").hidden=ok;$("#lMain").hidden=!ok;if(!ok)return;
   const acts=myActs();
+  if(!loaded){$("#lMain").hidden=true;$("#lGate").hidden=true;return}  // 資料還沒載入前不要登出
   if(!acts.length){leader=null;ls.del("leaderAuth");$("#lGate").hidden=false;$("#lMain").hidden=true;return}
   const activeActs=acts.filter(a=>a.status!=="archived");
   if(document.activeElement!==$("#nAct")){
@@ -887,7 +917,7 @@ $("#cSave").onclick=()=>safe(async()=>{const config={};Object.entries(CF).forEac
   await call({action:"saveConfig",pin:adminPin,config});if(ap){adminPin=ap;ls.set("adminPin",ap)}cfgFilled=false;menuSig="";await refresh();toast(ap?"設定已儲存，管理密碼已更新":"設定已儲存")});
 
 // ---------- 自動更新：有新版就重新載入（避免手機一直用舊版） ----------
-const APP_VERSION="2026-10-05-1445";
+const APP_VERSION="2026-10-05-1505";
 (async()=>{try{
   const r=await fetch("./?v="+Date.now(),{cache:"no-store"});const t=await r.text();
   const m=t.match(/APP_VERSION="([^"]+)"/);
@@ -897,8 +927,9 @@ const APP_VERSION="2026-10-05-1445";
 // ---------- 啟動 ----------
 showTab(ls.get("tab","order"));
 renderAll();
-safe(refresh);
-setInterval(()=>{if(document.visibilityState==="visible"&&$("#sheetBg").hidden&&!document.activeElement?.matches?.("input,textarea,select"))refresh().catch(()=>{})},20000);
+refresh().catch(()=>{if(!loaded){$("#oNone").innerHTML=`<div class="empty">連不上伺服器。<br><button class="btn brass" onclick="location.reload()">重新整理</button></div>`}});
+document.addEventListener("click",e=>{if(e.target.closest("#retryBtn"))refresh().then(()=>toast("已更新")).catch(()=>toast("還是連不上，請檢查網路"))});
+setInterval(()=>{if(document.visibilityState==="visible"&&$("#sheetBg").hidden&&!document.activeElement?.matches?.("input,textarea,select"))refresh().catch(()=>{})},stale?8000:20000);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")refresh().catch(()=>{})});
 </script>
 </body>
