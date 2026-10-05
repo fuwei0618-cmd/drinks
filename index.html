@@ -584,17 +584,17 @@ function renderOrder(){
   if(last.length)lc.innerHTML=`<div class="row"><strong class="grow">上次點的</strong><button class="btn brass sm" id="repeatBtn">照上次再點一次</button></div>`+last.map(o=>`<div class="muted">${esc(itemLabel(o))} ×${o.qty}・${esc(spec(o))}</div>`).join("");
   const mine=all.filter(o=>o.device===device);
   $("#oMine").innerHTML=`<strong>我在這張單點的</strong>`+(mine.length?`<div style="display:grid;gap:8px">${mine.map(o=>`<div class="line"><div class="d"><div><b>${esc(itemLabel(o))}</b> ×${o.qty}</div><div class="muted">${esc(o.name)}・${esc(spec(o))}${o.note?"・"+esc(o.note):""}</div></div><div class="pr">$${num(o.unit)*num(o.qty,1)}</div><button class="btn ghost sm" data-del="${o.id}">刪除</button></div>`).join("")}</div>`:`<div class="muted">還沒點，從下面菜單選一杯。</div>`);
-  renderMenuList(a.useAct!=="false");
+  renderMenuList(a.useAct!=="false"&&s.mode!=="delivery");
 }
 let menuSig="";
 function renderMenuList(useAct){
   const items=D.menu.filter(m=>m.on!=="false");
   const sig=useAct+JSON.stringify(items);if(sig===menuSig)return;menuSig=sig;
   const cats=[...new Set(items.map(m=>m.cat))];
-  const pt=(m,sz)=>{const p=num(sz==="XL"?m.XL:m.L),x=useAct?num(sz==="XL"?m.aXL:m.aL):0;return `${sz} ${x>0?`<s>${p}</s> <b>${x}</b>`:`<b>${p}</b>`}`};
+  const pt=(m,sz)=>{const p=num(sz==="XL"?m.XL:m.L),x=useAct?num(sz==="XL"?m.aXL:m.aL):0;return `${sz} <b>${p}</b>${x>0?` <span class="tag act" style="margin-left:2px">自取 ${x}</span>`:""}`};
   $("#cats").innerHTML=cats.map((c,i)=>`<button class="chip" data-ci="${i}">${esc(c)}</button>`).join("");
   $("#menu").innerHTML=cats.map((c,i)=>`<div class="cat" id="cat${i}"><h3>${esc(c)}</h3><div class="items">${items.filter(m=>m.cat===c).map(m=>{const f=flagsOf(m);const hasAct=useAct&&(num(m.aL)>0||num(m.aXL)>0);
-    return `<button class="item" data-id="${m.id}"><span class="nm">${esc(m.name)}${f.includes("r")?'<span class="tag rec">推</span>':""}${f.includes("f")?'<span class="tag fix">糖固</span>':""}${f.includes("p")?'<span class="tag pearl">珍珠 12:30後</span>':""}${hasAct?'<span class="tag act">優惠</span>':""}</span><span class="pr">${pt(m,"L")}${num(m.XL)>0?" · "+pt(m,"XL"):""}</span></button>`}).join("")}</div></div>`).join("");
+    return `<button class="item" data-id="${m.id}"><span class="nm">${esc(m.name)}${f.includes("r")?'<span class="tag rec">推</span>':""}${f.includes("f")?'<span class="tag fix">糖固</span>':""}${f.includes("p")?'<span class="tag pearl">珍珠 12:30後</span>':""}</span><span class="pr">${pt(m,"L")}${num(m.XL)>0?" · "+pt(m,"XL"):""}</span></button>`}).join("")}</div></div>`).join("");
 }
 $("#oSessions").onclick=e=>{const b=e.target.closest("[data-sid]");if(b){curOrderSid=b.dataset.sid;ls.set("lastSid",curOrderSid);renderOrder()}};
 $("#cats").onclick=e=>{const b=e.target.closest("[data-ci]");if(b)document.getElementById("cat"+b.dataset.ci).scrollIntoView({behavior:"smooth",block:"start"})};
@@ -634,15 +634,16 @@ function openSheet(id){
 }
 function drawSheet(){
   const m=menuById(cur.itemId),f=flagsOf(m),b=basesOf(m),ua=curUseAct();
-  const pr=(sz,tops)=>{const p=priceOf(m,sz,tops,D.config);return ua?p.unitAct:p.unit};
+  const sess=D.sessions.find(x=>x.id===curOrderSid),promoOn=ua&&sess?.mode!=="delivery";
+  const pr=(sz,tops)=>priceOf(m,sz,tops,D.config).unit, pp=(sz,tops)=>{const p=priceOf(m,sz,tops,D.config);return promoOn&&p.unitAct<p.unit?p.unitAct:0};
   $("#sPearl").hidden=!isPearl({itemId:cur.itemId,tops:cur.tops.join("、")});
   $("#sPearl").textContent=`⚠️ 含珍珠：${D.config.timePearl||"12:30"} 之後才能取餐`;
   $("#gBase").hidden=!b.length;if(b.length)seg($("#sBase"),b,cur.base,v=>{cur.base=v;drawSheet()});
-  seg($("#sSize"),num(m.XL)>0?["L","XL"]:["L"],cur.size,v=>{cur.size=v;drawSheet()},v=>`${v}（${v==="XL"?"960":"700"}ml）$${pr(v,[])}`);
+  seg($("#sSize"),num(m.XL)>0?["L","XL"]:["L"],cur.size,v=>{cur.size=v;drawSheet()},v=>`${v}（${v==="XL"?"960":"700"}ml）$${pr(v,[])}${pp(v,[])?`・自取 $${pp(v,[])}`:""}`);
   $("#gSugar").hidden=f.includes("f");seg($("#sSugar"),SUGAR,cur.sugar,v=>{cur.sugar=v;drawSheet()});
   $("#gIce").hidden=f.includes("h");seg($("#sIce"),ICE,cur.ice,v=>{cur.ice=v;drawSheet()});
   seg($("#sTop"),topsList().map(t=>t[0]),cur.tops,v=>{cur.tops=cur.tops.includes(v)?cur.tops.filter(x=>x!==v):[...cur.tops,v];drawSheet()},v=>`${v} +${topsMap(D.config)[v]}`);
-  $("#qVal").textContent=cur.qty;$("#sAdd").textContent=`加入 $${pr(cur.size,cur.tops)*cur.qty}`;
+  $("#qVal").textContent=cur.qty;$("#sAdd").textContent=`加入 $${pr(cur.size,cur.tops)*cur.qty}${pp(cur.size,cur.tops)?`（自取 $${pp(cur.size,cur.tops)*cur.qty}）`:""}`;
 }
 $("#qMinus").onclick=()=>{cur.qty=Math.max(1,cur.qty-1);drawSheet()};
 $("#qPlus").onclick=()=>{cur.qty=Math.min(20,cur.qty+1);drawSheet()};
