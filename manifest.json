@@ -1,0 +1,12 @@
+{
+  "name": "飲料團購點單",
+  "short_name": "飲料點單",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1c2540",
+  "icons": [
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
